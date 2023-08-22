@@ -1,0 +1,81 @@
+Tables:
+Table 1: Device Installation DID
+Table 2: Device meter DMD
+
+Question1: Controller Status Report 
+
+SELECT
+    DID.device_id AS Device_Id,
+    DID.device_type AS Device_Type,
+    CONCAT('[', 
+           SUBSTRING(DID.gps_coordinates, CHARINDEX(',', DID.gps_coordinates) + 2, CHARINDEX(']', DID.gps_coordinates) - CHARINDEX(',', DID.gps_coordinates) - 2),
+           ', ',
+           SUBSTRING(DID.gps_coordinates, 2, CHARINDEX(',', DID.gps_coordinates) - 2)
+           ,']') AS GPS_Coordinates,
+    CASE
+        WHEN DID.rssi_snr < -80 AND DID.rssi_snr > -100 THEN 'Excellent'
+        WHEN DID.rssi_snr < -100 AND DID.rssi_snr > -115 THEN 'Good'
+        WHEN DID.rssi_snr < -115 AND DID.rssi_snr > -125 THEN 'Average'
+        ELSE 'Poor'
+    END AS Signal_Strength,
+    CASE
+        WHEN DID.device_type = 'Dual' AND DMD.active_power > 0.05 THEN 'On'
+        WHEN DID.device_type = 'Group' AND DMD.active_power > 0.1 THEN 'On'
+        ELSE 'Off'
+    END AS Controller_Status,
+    CASE
+        WHEN DMD.latest_em_timestamp > DATEADD(MINUTE, -60, GETDATE()) THEN 'On'
+        ELSE 'Off'
+    END AS Power_Status,
+    CASE
+        WHEN DMD.active_power > (0.2 * DID.attached_load) THEN 'Yes'
+        ELSE 'No'
+    END AS Overload
+FROM
+    device_installation_data AS DID
+LEFT JOIN (
+    SELECT
+        device_id,
+        MAX(em_timestamp) AS latest_em_timestamp,
+        MAX(active_power) AS active_power
+    FROM
+        device_meter_data
+    WHERE
+        em_timestamp > DATEADD(HOUR, -24, GETDATE())
+    GROUP BY
+        device_id
+) AS DMD
+ON
+    DID.device_id = DMD.device_id;
+
+
+
+
+Question2: EM Consumption Report
+
+WITH CTE AS (
+    SELECT
+        dmd.device_id,
+        CONVERT(DATE, dmd.em_timestamp) AS [Date],
+        MAX(dmd.em_reading) AS max_em_reading,
+        LAG(MAX(dmd.em_reading)) OVER (PARTITION BY dmd.device_id ORDER BY CONVERT(DATE, dmd.em_timestamp)) AS max_prev_em_reading
+    FROM
+        device_meter_data dmd
+    GROUP BY
+        dmd.device_id, CONVERT(DATE, dmd.em_timestamp)
+)
+SELECT
+    did.device_id,
+    did.device_type,
+    dme.[Date],
+    MAX(dme.max_em_reading - dme.max_prev_em_reading) AS EM_Consumed
+FROM
+    device_installation_data did
+JOIN
+    CTE dme ON did.device_id = dme.device_id
+GROUP BY
+    did.device_id, did.device_type, dme.[Date]
+ORDER BY
+    did.device_id, dme.[Date];
+
+
